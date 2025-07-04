@@ -1,0 +1,840 @@
+// export-manager.js - Enhanced Excel Export with View-Specific Data and Multi-Sheet Support
+window.exportManager = {
+    // Initialize export functionality
+    init: function() {
+        console.log('Initializing export manager...');
+        this.setupExportListeners();
+    },
+
+    // Setup export event listeners
+    setupExportListeners: function() {
+        const exportBtn = document.getElementById('export-excel-btn');
+        if (exportBtn) {
+            exportBtn.addEventListener('click', () => {
+                this.exportCurrentView();
+            });
+        }
+    },
+
+    // Export current view data to Excel
+    exportCurrentView: function() {
+        if (!window.taskViews) {
+            window.showNotification('Export functionality not available', 'error');
+            return;
+        }
+
+        try {
+            window.showNotification('Preparing export...', 'info');
+            
+            // Get current view data
+            const viewData = window.taskViews.getCurrentViewData();
+            
+            if (viewData.tasks.length === 0) {
+                window.showNotification('No data to export in current view', 'warning');
+                return;
+            }
+
+            // Create workbook
+            const workbook = XLSX.utils.book_new();
+            
+            // Add multiple sheets based on view type
+            this.addTaskDataSheet(workbook, viewData);
+            this.addSummarySheet(workbook, viewData);
+            this.addAnalyticsSheet(workbook, viewData);
+            
+            // Generate filename with timestamp and view type
+            const timestamp = new Date().toISOString().split('T')[0];
+            const viewType = viewData.type.charAt(0).toUpperCase() + viewData.type.slice(1);
+            const filename = `TaskManager_${viewType}_${viewData.period.replace(/[^\w\s-]/g, '')}_${timestamp}.xlsx`;
+            
+            // Write and download file
+            XLSX.writeFile(workbook, filename);
+            
+            window.showNotification(`Data exported successfully as ${filename}`, 'success');
+            
+        } catch (error) {
+            console.error('Export error:', error);
+            window.showNotification('Error exporting data', 'error');
+        }
+    },
+
+    // Add main task data sheet with enhanced formatting
+    addTaskDataSheet: function(workbook, viewData) {
+        const { tasks, period, type } = viewData;
+        
+        // Prepare task data for export with enhanced formatting
+        const exportData = tasks.map(task => {
+            const dueDate = new Date(task.dueDate);
+            const startDate = task.startDate ? new Date(task.startDate) : null;
+            const createdDate = new Date(task.createdAt);
+            const today = new Date();
+            
+            // Calculate days remaining
+            const daysRemaining = Math.ceil((dueDate - today) / (1000 * 60 * 60 * 24));
+            
+            // Check overdue status
+            const isOverdue = window.overdueManager ? window.overdueManager.isTaskOverdue(task) : false;
+            const isInGrace = window.overdueManager ? window.overdueManager.isTaskInGracePeriod(task) : false;
+            
+            return {
+                'Task ID': task.id,
+                'Title': task.title,
+                'Description': task.description || '',
+                'Status': this.formatStatus(task.status),
+                'Priority': task.priority ? task.priority.toUpperCase() : 'MEDIUM',
+                'Category': task.category || 'General',
+                'Created By': task.createdBy || '',
+                'Assigned To': task.assignedUsers ? task.assignedUsers.join(', ') : 'Unassigned',
+                'Assigned By': task.assignedBy || '',
+                'Created Date': createdDate.toLocaleDateString('en-US', { 
+                    year: 'numeric', 
+                    month: 'short', 
+                    day: '2-digit' 
+                }),
+                'Start Date': startDate ? startDate.toLocaleDateString('en-US', { 
+                    year: 'numeric', 
+                    month: 'short', 
+                    day: '2-digit' 
+                }) : '',
+                'Due Date': dueDate.toLocaleDateString('en-US', { 
+                    year: 'numeric', 
+                    month: 'short', 
+                    day: '2-digit' 
+                }),
+                'Days Remaining': daysRemaining,
+                'Is Overdue': isOverdue ? '⚠️ YES' : '✓ NO',
+                'In Grace Period': isInGrace ? '⏱️ YES' : 'NO',
+                'Progress': this.getTaskProgress(task.status),
+                'Blocked At': task.blockedAt ? new Date(task.blockedAt).toLocaleDateString('en-US', { 
+                    year: 'numeric', 
+                    month: 'short', 
+                    day: '2-digit' 
+                }) : '',
+                'Blocked Reason': task.blockedReason || '',
+                'Completed At': task.completedAt ? new Date(task.completedAt).toLocaleDateString('en-US', { 
+                    year: 'numeric', 
+                    month: 'short', 
+                    day: '2-digit' 
+                }) : '',
+                'Completed By': task.completedBy || ''
+            };
+        });
+
+        // Create worksheet
+        const worksheet = XLSX.utils.json_to_sheet(exportData);
+        
+        // Enhanced header formatting
+        this.formatHeaders(worksheet, exportData.length);
+        
+        // Set column widths for better readability
+        const colWidths = [
+            { wch: 18 }, // Task ID
+            { wch: 35 }, // Title
+            { wch: 60 }, // Description
+            { wch: 15 }, // Status
+            { wch: 12 }, // Priority
+            { wch: 18 }, // Category
+            { wch: 18 }, // Created By
+            { wch: 25 }, // Assigned To
+            { wch: 18 }, // Assigned By
+            { wch: 15 }, // Created Date
+            { wch: 15 }, // Start Date
+            { wch: 15 }, // Due Date
+            { wch: 18 }, // Days Remaining
+            { wch: 15 }, // Is Overdue
+            { wch: 18 }, // In Grace Period
+            { wch: 12 }, // Progress
+            { wch: 15 }, // Blocked At
+            { wch: 40 }, // Blocked Reason
+            { wch: 15 }, // Completed At
+            { wch: 18 }  // Completed By
+        ];
+        worksheet['!cols'] = colWidths;
+        
+        // Add conditional formatting and styling
+        this.addAdvancedFormatting(worksheet, exportData.length);
+        
+        // Add sheet to workbook
+        const sheetName = `${type.charAt(0).toUpperCase() + type.slice(1)} Tasks`;
+        XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
+    },
+
+    // Enhanced header formatting
+    formatHeaders: function(worksheet, dataLength) {
+        if (dataLength === 0) return;
+        
+        // Get all header cells (first row)
+        const headerRange = XLSX.utils.decode_range(worksheet['!ref']);
+        for (let col = headerRange.s.c; col <= headerRange.e.c; col++) {
+            const cellAddress = XLSX.utils.encode_cell({ r: 0, c: col });
+            const cell = worksheet[cellAddress];
+            
+            if (cell) {
+                // Set header cell style
+                cell.s = {
+                    font: { 
+                        bold: true, 
+                        color: { rgb: "FFFFFF" },
+                        size: 12
+                    },
+                    fill: { 
+                        fgColor: { rgb: "2563EB" } // Blue background
+                    },
+                    alignment: { 
+                        horizontal: "center",
+                        vertical: "center",
+                        wrapText: true 
+                    },
+                    border: {
+                        top: { style: "thin", color: { rgb: "000000" } },
+                        bottom: { style: "thin", color: { rgb: "000000" } },
+                        left: { style: "thin", color: { rgb: "000000" } },
+                        right: { style: "thin", color: { rgb: "000000" } }
+                    }
+                };
+            }
+        }
+    },
+
+    // Advanced formatting for data cells
+    addAdvancedFormatting: function(worksheet, dataLength) {
+        if (dataLength === 0) return;
+        
+        const range = XLSX.utils.decode_range(worksheet['!ref']);
+        
+        // Format data rows
+        for (let row = 1; row <= range.e.r; row++) {
+            for (let col = range.s.c; col <= range.e.c; col++) {
+                const cellAddress = XLSX.utils.encode_cell({ r: row, c: col });
+                const cell = worksheet[cellAddress];
+                
+                if (cell) {
+                    // Base cell style
+                    cell.s = {
+                        alignment: { 
+                            vertical: "center",
+                            wrapText: true 
+                        },
+                        border: {
+                            top: { style: "thin", color: { rgb: "E5E7EB" } },
+                            bottom: { style: "thin", color: { rgb: "E5E7EB" } },
+                            left: { style: "thin", color: { rgb: "E5E7EB" } },
+                            right: { style: "thin", color: { rgb: "E5E7EB" } }
+                        }
+                    };
+                    
+                    // Alternating row colors
+                    if (row % 2 === 0) {
+                        cell.s.fill = { fgColor: { rgb: "F9FAFB" } };
+                    }
+                    
+                    // Special formatting based on column content
+                    const headerCell = worksheet[XLSX.utils.encode_cell({ r: 0, c: col })];
+                    if (headerCell && headerCell.v) {
+                        const header = headerCell.v.toString();
+                        
+                        // Priority column formatting
+                        if (header === 'Priority' && cell.v) {
+                            const priority = cell.v.toString().toLowerCase();
+                            switch (priority) {
+                                case 'urgent':
+                                    cell.s.fill = { fgColor: { rgb: "FEE2E2" } }; // Light red
+                                    cell.s.font = { color: { rgb: "DC2626" }, bold: true }; // Red text
+                                    break;
+                                case 'high':
+                                    cell.s.fill = { fgColor: { rgb: "FED7AA" } }; // Light orange
+                                    cell.s.font = { color: { rgb: "EA580C" }, bold: true }; // Orange text
+                                    break;
+                                case 'medium':
+                                    cell.s.fill = { fgColor: { rgb: "FEF3C7" } }; // Light yellow
+                                    cell.s.font = { color: { rgb: "D97706" } }; // Yellow text
+                                    break;
+                                case 'low':
+                                    cell.s.fill = { fgColor: { rgb: "D1FAE5" } }; // Light green
+                                    cell.s.font = { color: { rgb: "059669" } }; // Green text
+                                    break;
+                            }
+                        }
+                        
+                        // Status column formatting
+                        if (header === 'Status' && cell.v) {
+                            const status = cell.v.toString().toLowerCase();
+                            switch (status) {
+                                case 'completed':
+                                    cell.s.fill = { fgColor: { rgb: "D1FAE5" } }; // Light green
+                                    cell.s.font = { color: { rgb: "059669" }, bold: true }; // Green text
+                                    break;
+                                case 'in progress':
+                                    cell.s.fill = { fgColor: { rgb: "DBEAFE" } }; // Light blue
+                                    cell.s.font = { color: { rgb: "2563EB" }, bold: true }; // Blue text
+                                    break;
+                                case 'blocked':
+                                    cell.s.fill = { fgColor: { rgb: "FEE2E2" } }; // Light red
+                                    cell.s.font = { color: { rgb: "DC2626" }, bold: true }; // Red text
+                                    break;
+                                case 'paused':
+                                    cell.s.fill = { fgColor: { rgb: "F3E8FF" } }; // Light purple
+                                    cell.s.font = { color: { rgb: "7C3AED" } }; // Purple text
+                                    break;
+                                case 'to do':
+                                    cell.s.fill = { fgColor: { rgb: "F3F4F6" } }; // Light gray
+                                    cell.s.font = { color: { rgb: "6B7280" } }; // Gray text
+                                    break;
+                            }
+                        }
+                        
+                        // Overdue column formatting
+                        if (header === 'Is Overdue' && cell.v && cell.v.toString().includes('YES')) {
+                            cell.s.fill = { fgColor: { rgb: "FEE2E2" } }; // Light red
+                            cell.s.font = { color: { rgb: "DC2626" }, bold: true }; // Red text
+                        }
+                        
+                        // Days remaining formatting
+                        if (header === 'Days Remaining' && cell.v !== undefined) {
+                            const days = parseInt(cell.v);
+                            if (!isNaN(days)) {
+                                if (days < 0) {
+                                    cell.s.fill = { fgColor: { rgb: "FEE2E2" } }; // Light red
+                                    cell.s.font = { color: { rgb: "DC2626" }, bold: true }; // Red text
+                                } else if (days <= 3) {
+                                    cell.s.fill = { fgColor: { rgb: "FED7AA" } }; // Light orange
+                                    cell.s.font = { color: { rgb: "EA580C" }, bold: true }; // Orange text
+                                } else if (days <= 7) {
+                                    cell.s.fill = { fgColor: { rgb: "FEF3C7" } }; // Light yellow
+                                    cell.s.font = { color: { rgb: "D97706" } }; // Yellow text
+                                }
+                            }
+                        }
+                        
+                        // Center align specific columns
+                        if (['Priority', 'Status', 'Is Overdue', 'In Grace Period', 'Progress', 'Days Remaining'].includes(header)) {
+                            cell.s.alignment.horizontal = "center";
+                        }
+                        
+                        // Left align text columns
+                        if (['Title', 'Description', 'Blocked Reason'].includes(header)) {
+                            cell.s.alignment.horizontal = "left";
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Set row heights for better visibility
+        if (!worksheet['!rows']) worksheet['!rows'] = [];
+        worksheet['!rows'][0] = { hpt: 30 }; // Header row height
+        for (let i = 1; i <= dataLength; i++) {
+            worksheet['!rows'][i] = { hpt: 25 }; // Data row height
+        }
+    },
+
+    // Add enhanced summary analytics sheet
+    addSummarySheet: function(workbook, viewData) {
+        const { tasks, period, type } = viewData;
+        
+        // Calculate comprehensive analytics
+        const analytics = this.calculateDetailedAnalytics(tasks);
+        
+        // Get current filter information
+        const filterInfo = this.getCurrentFilterInfo();
+        
+        // Create enhanced summary data
+        const summaryData = [
+            ['📊 TASK MANAGEMENT SUMMARY REPORT', ''],
+            ['', ''],
+            ['📅 REPORT INFORMATION', ''],
+            ['Report Period:', period],
+            ['Report Type:', type.charAt(0).toUpperCase() + type.slice(1)],
+            ['Generated On:', new Date().toLocaleDateString('en-US', { 
+                weekday: 'long', 
+                year: 'numeric', 
+                month: 'long', 
+                day: 'numeric' 
+            })],
+            ['Generated At:', new Date().toLocaleTimeString('en-US')],
+            ['Generated By:', window.auth?.currentUser || 'System User'],
+            ['Total Records:', analytics.total],
+            ['', ''],
+            
+            ['🔍 APPLIED FILTERS', ''],
+            ...filterInfo.map(filter => [filter.name, filter.value]),
+            ['', ''],
+            
+            ['📈 OVERALL STATISTICS', ''],
+            ['Total Tasks:', analytics.total],
+            ['✅ Completed Tasks:', analytics.completed],
+            ['🔄 In Progress Tasks:', analytics.inProgress],
+            ['🚫 Blocked Tasks:', analytics.blocked],
+            ['⏸️ Paused Tasks:', analytics.paused],
+            ['📝 To Do Tasks:', analytics.todo],
+            ['⚠️ Overdue Tasks:', analytics.overdue],
+            ['📊 Completion Rate:', `${analytics.completionRate}%`],
+            ['', ''],
+            
+            ['🎯 PRIORITY BREAKDOWN', ''],
+            ['🔴 Urgent Priority:', analytics.byPriority.urgent || 0],
+            ['🟠 High Priority:', analytics.byPriority.high || 0],
+            ['🟡 Medium Priority:', analytics.byPriority.medium || 0],
+            ['🟢 Low Priority:', analytics.byPriority.low || 0],
+            ['', ''],
+            
+            ['📂 CATEGORY BREAKDOWN', ''],
+            ...Object.entries(analytics.byCategory).map(([category, count]) => [`📁 ${category}:`, count]),
+            ['', ''],
+            
+            ['👥 USER WORKLOAD DISTRIBUTION', ''],
+            ...Object.entries(analytics.byUser).map(([user, count]) => [`👤 ${user}:`, count]),
+            ['', ''],
+            
+            ['⏰ TIME ANALYSIS', ''],
+            ['📅 Due This Week:', analytics.dueThisWeek],
+            ['📅 Due Next Week:', analytics.dueNextWeek],
+            ['📅 Due This Month:', analytics.dueThisMonth],
+            ['⚠️ Past Due:', analytics.overdue],
+            ['', ''],
+            
+            ['💡 KEY INSIGHTS', ''],
+            ['Most Common Priority:', this.getMostCommon(analytics.byPriority)],
+            ['Most Active Category:', this.getMostCommon(analytics.byCategory)],
+            ['Most Assigned User:', this.getMostCommon(analytics.byUser)],
+            ['Average Days to Due:', this.calculateAverageDaysToDue(tasks)]
+        ];
+
+        // Create worksheet
+        const summaryWorksheet = XLSX.utils.aoa_to_sheet(summaryData);
+        
+        // Enhanced formatting for summary sheet
+        this.formatSummarySheet(summaryWorksheet, summaryData.length);
+        
+        // Set column widths
+        summaryWorksheet['!cols'] = [
+            { wch: 35 },
+            { wch: 20 }
+        ];
+        
+        // Add sheet to workbook
+        XLSX.utils.book_append_sheet(workbook, summaryWorksheet, 'Summary');
+    },
+
+    // Get current filter information for export
+    getCurrentFilterInfo: function() {
+        const filters = [];
+        
+        // Check each filter element
+        const filterUser = document.getElementById('filter-user');
+        const filterPriority = document.getElementById('filter-priority');
+        const filterCategory = document.getElementById('filter-category');
+        const filterStatus = document.getElementById('filter-status');
+        const filterDateStart = document.getElementById('filter-date-start');
+        const filterDateEnd = document.getElementById('filter-date-end');
+        
+        if (filterUser && filterUser.value) {
+            filters.push({ name: '👤 User Filter:', value: filterUser.value });
+        }
+        if (filterPriority && filterPriority.value) {
+            filters.push({ name: '🎯 Priority Filter:', value: filterPriority.value.toUpperCase() });
+        }
+        if (filterCategory && filterCategory.value) {
+            filters.push({ name: '📂 Category Filter:', value: filterCategory.value });
+        }
+        if (filterStatus && filterStatus.value) {
+            filters.push({ name: '📊 Status Filter:', value: filterStatus.value.replace('-', ' ').toUpperCase() });
+        }
+        if (filterDateStart && filterDateStart.value) {
+            filters.push({ name: '📅 Start Date Filter:', value: new Date(filterDateStart.value).toLocaleDateString() });
+        }
+        if (filterDateEnd && filterDateEnd.value) {
+            filters.push({ name: '📅 End Date Filter:', value: new Date(filterDateEnd.value).toLocaleDateString() });
+        }
+        
+        if (filters.length === 0) {
+            filters.push({ name: 'Filters Applied:', value: 'None - Showing All Data' });
+        }
+        
+        return filters;
+    },
+
+    // Format summary sheet with enhanced styling
+    formatSummarySheet: function(worksheet, rowCount) {
+        for (let row = 0; row < rowCount; row++) {
+            for (let col = 0; col < 2; col++) {
+                const cellAddress = XLSX.utils.encode_cell({ r: row, c: col });
+                const cell = worksheet[cellAddress];
+                
+                if (cell && cell.v) {
+                    const value = cell.v.toString();
+                    
+                    // Section headers (all caps or with emojis)
+                    if (value.includes('SUMMARY REPORT') || value.includes('REPORT INFORMATION') || 
+                        value.includes('APPLIED FILTERS') || value.includes('OVERALL STATISTICS') || 
+                        value.includes('PRIORITY BREAKDOWN') || value.includes('CATEGORY BREAKDOWN') || 
+                        value.includes('USER WORKLOAD') || value.includes('TIME ANALYSIS') || 
+                        value.includes('KEY INSIGHTS')) {
+                        cell.s = {
+                            font: { bold: true, color: { rgb: "FFFFFF" }, size: 14 },
+                            fill: { fgColor: { rgb: "1F2937" } }, // Dark gray background
+                            alignment: { horizontal: "left", vertical: "center" },
+                            border: {
+                                top: { style: "medium", color: { rgb: "000000" } },
+                                bottom: { style: "medium", color: { rgb: "000000" } },
+                                left: { style: "medium", color: { rgb: "000000" } },
+                                right: { style: "medium", color: { rgb: "000000" } }
+                            }
+                        };
+                    }
+                    // Data labels (left column with colons)
+                    else if (col === 0 && value.includes(':')) {
+                        cell.s = {
+                            font: { bold: true, color: { rgb: "374151" }, size: 11 },
+                            fill: { fgColor: { rgb: "F3F4F6" } }, // Light gray background
+                            alignment: { horizontal: "left", vertical: "center" },
+                            border: {
+                                top: { style: "thin", color: { rgb: "D1D5DB" } },
+                                bottom: { style: "thin", color: { rgb: "D1D5DB" } },
+                                left: { style: "thin", color: { rgb: "D1D5DB" } },
+                                right: { style: "thin", color: { rgb: "D1D5DB" } }
+                            }
+                        };
+                    }
+                    // Data values (right column)
+                    else if (col === 1 && value !== '') {
+                        cell.s = {
+                            font: { color: { rgb: "111827" }, size: 11 },
+                            alignment: { horizontal: "left", vertical: "center" },
+                            border: {
+                                top: { style: "thin", color: { rgb: "D1D5DB" } },
+                                bottom: { style: "thin", color: { rgb: "D1D5DB" } },
+                                left: { style: "thin", color: { rgb: "D1D5DB" } },
+                                right: { style: "thin", color: { rgb: "D1D5DB" } }
+                            }
+                        };
+                        
+                        // Special formatting for percentage values
+                        if (value.includes('%')) {
+                            const percentage = parseInt(value);
+                            if (percentage >= 80) {
+                                cell.s.fill = { fgColor: { rgb: "D1FAE5" } }; // Light green
+                                cell.s.font.color = { rgb: "059669" };
+                                cell.s.font.bold = true;
+                            } else if (percentage >= 60) {
+                                cell.s.fill = { fgColor: { rgb: "FEF3C7" } }; // Light yellow
+                                cell.s.font.color = { rgb: "D97706" };
+                            } else if (percentage < 40) {
+                                cell.s.fill = { fgColor: { rgb: "FEE2E2" } }; // Light red
+                                cell.s.font.color = { rgb: "DC2626" };
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Set row heights
+        if (!worksheet['!rows']) worksheet['!rows'] = [];
+        for (let i = 0; i < rowCount; i++) {
+            worksheet['!rows'][i] = { hpt: 25 };
+        }
+    },
+
+    // Helper function to get most common item
+    getMostCommon: function(obj) {
+        let maxCount = 0;
+        let mostCommon = 'None';
+        
+        for (const [key, value] of Object.entries(obj)) {
+            if (value > maxCount) {
+                maxCount = value;
+                mostCommon = key;
+            }
+        }
+        
+        return maxCount > 0 ? `${mostCommon} (${maxCount})` : 'None';
+    },
+
+    // Calculate average days to due date
+    calculateAverageDaysToDue: function(tasks) {
+        if (tasks.length === 0) return 'N/A';
+        
+        const today = new Date();
+        let totalDays = 0;
+        let validTasks = 0;
+        
+        tasks.forEach(task => {
+            if (task.dueDate) {
+                const dueDate = new Date(task.dueDate);
+                const days = Math.ceil((dueDate - today) / (1000 * 60 * 60 * 24));
+                totalDays += days;
+                validTasks++;
+            }
+        });
+        
+        return validTasks > 0 ? `${Math.round(totalDays / validTasks)} days` : 'N/A';
+    },
+
+    // Add detailed analytics sheet
+    addAnalyticsSheet: function(workbook, viewData) {
+        const { tasks } = viewData;
+        
+        // User performance analytics
+        const userAnalytics = this.calculateUserPerformance(tasks);
+        
+        // Create analytics data
+        const analyticsData = [
+            ['USER PERFORMANCE ANALYTICS', '', '', '', ''],
+            ['User', 'Total Tasks', 'Completed', 'Overdue', 'Completion Rate'],
+            ...userAnalytics.map(user => [
+                user.name,
+                user.total,
+                user.completed,
+                user.overdue,
+                `${user.completionRate}%`
+            ]),
+            ['', '', '', '', ''],
+            
+            ['TASK LIFECYCLE ANALYSIS', '', '', '', ''],
+            ['Status', 'Count', 'Percentage', 'Avg Days', 'Notes'],
+            ...this.getTaskLifecycleAnalysis(tasks)
+        ];
+
+        // Create worksheet
+        const analyticsWorksheet = XLSX.utils.aoa_to_sheet(analyticsData);
+        
+        // Set column widths
+        analyticsWorksheet['!cols'] = [
+            { wch: 20 },
+            { wch: 12 },
+            { wch: 12 },
+            { wch: 12 },
+            { wch: 15 }
+        ];
+        
+        // Add sheet to workbook
+        XLSX.utils.book_append_sheet(workbook, analyticsWorksheet, 'Analytics');
+    },
+
+    // Calculate detailed analytics for export
+    calculateDetailedAnalytics: function(tasks) {
+        const analytics = {
+            total: tasks.length,
+            completed: 0,
+            inProgress: 0,
+            blocked: 0,
+            paused: 0,
+            todo: 0,
+            overdue: 0,
+            dueThisWeek: 0,
+            dueNextWeek: 0,
+            dueThisMonth: 0,
+            byPriority: { low: 0, medium: 0, high: 0, urgent: 0 },
+            byCategory: {},
+            byUser: {},
+            completionRate: 0
+        };
+
+        const today = new Date();
+        const weekFromNow = new Date(today.getTime() + 7 * 24 * 60 * 60 * 1000);
+        const twoWeeksFromNow = new Date(today.getTime() + 14 * 24 * 60 * 60 * 1000);
+        const monthFromNow = new Date(today.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+        tasks.forEach(task => {
+            // Status counts
+            const status = task.status || 'todo';
+            analytics[status] = (analytics[status] || 0) + 1;
+
+            // Priority counts
+            analytics.byPriority[task.priority] = (analytics.byPriority[task.priority] || 0) + 1;
+
+            // Category counts
+            analytics.byCategory[task.category] = (analytics.byCategory[task.category] || 0) + 1;
+
+            // User counts
+            if (task.assignedUsers) {
+                task.assignedUsers.forEach(user => {
+                    analytics.byUser[user] = (analytics.byUser[user] || 0) + 1;
+                });
+            }
+
+            // Date-based analysis
+            const dueDate = new Date(task.dueDate);
+            
+            if (window.overdueManager && window.overdueManager.isTaskOverdue(task) && task.status !== 'completed') {
+                analytics.overdue++;
+            }
+
+            if (dueDate >= today && dueDate <= weekFromNow) {
+                analytics.dueThisWeek++;
+            } else if (dueDate > weekFromNow && dueDate <= twoWeeksFromNow) {
+                analytics.dueNextWeek++;
+            }
+
+            if (dueDate >= today && dueDate <= monthFromNow) {
+                analytics.dueThisMonth++;
+            }
+        });
+
+        // Calculate completion rate
+        analytics.completionRate = tasks.length > 0 ? 
+            Math.round((analytics.completed / tasks.length) * 100) : 0;
+
+        return analytics;
+    },
+
+    // Calculate user performance metrics
+    calculateUserPerformance: function(tasks) {
+        const userStats = {};
+        
+        tasks.forEach(task => {
+            if (task.assignedUsers) {
+                task.assignedUsers.forEach(user => {
+                    if (!userStats[user]) {
+                        userStats[user] = {
+                            name: user,
+                            total: 0,
+                            completed: 0,
+                            overdue: 0,
+                            completionRate: 0
+                        };
+                    }
+                    
+                    userStats[user].total++;
+                    
+                    if (task.status === 'completed') {
+                        userStats[user].completed++;
+                    }
+                    
+                    if (window.overdueManager && window.overdueManager.isTaskOverdue(task) && task.status !== 'completed') {
+                        userStats[user].overdue++;
+                    }
+                });
+            }
+        });
+
+        // Calculate completion rates
+        Object.values(userStats).forEach(user => {
+            user.completionRate = user.total > 0 ? 
+                Math.round((user.completed / user.total) * 100) : 0;
+        });
+
+        return Object.values(userStats).sort((a, b) => b.completionRate - a.completionRate);
+    },
+
+    // Get task lifecycle analysis
+    getTaskLifecycleAnalysis: function(tasks) {
+        const statusCounts = {
+            'todo': { count: 0, avgDays: 0 },
+            'in-progress': { count: 0, avgDays: 0 },
+            'blocked': { count: 0, avgDays: 0 },
+            'paused': { count: 0, avgDays: 0 },
+            'completed': { count: 0, avgDays: 0 }
+        };
+
+        const today = new Date();
+
+        tasks.forEach(task => {
+            const status = task.status || 'todo';
+            statusCounts[status].count++;
+            
+            // Calculate average days (rough estimate based on creation date)
+            const createdDate = new Date(task.createdAt);
+            const daysSinceCreation = Math.ceil((today - createdDate) / (1000 * 60 * 60 * 24));
+            statusCounts[status].avgDays += daysSinceCreation;
+        });
+
+        // Calculate averages and format for export
+        return Object.entries(statusCounts).map(([status, data]) => {
+            const avgDays = data.count > 0 ? Math.round(data.avgDays / data.count) : 0;
+            const percentage = tasks.length > 0 ? Math.round((data.count / tasks.length) * 100) : 0;
+            
+            return [
+                this.formatStatus(status),
+                data.count,
+                `${percentage}%`,
+                avgDays,
+                this.getStatusNotes(status, data.count, avgDays)
+            ];
+        });
+    },
+
+    // Get notes for status analysis
+    getStatusNotes: function(status, count, avgDays) {
+        switch (status) {
+            case 'todo':
+                return count > 0 ? 'Backlog items awaiting start' : 'No pending tasks';
+            case 'in-progress':
+                return avgDays > 7 ? 'Some tasks may need attention' : 'Active development';
+            case 'blocked':
+                return count > 0 ? 'Requires immediate resolution' : 'No blocked items';
+            case 'paused':
+                return count > 0 ? 'On hold - check priority' : 'No paused items';
+            case 'completed':
+                return `Average completion time: ${avgDays} days`;
+            default:
+                return '';
+        }
+    },
+
+    // Add conditional formatting to worksheet
+    addConditionalFormatting: function(worksheet, rowCount) {
+        // This is a simplified version - full conditional formatting would require more complex XLSX formatting
+        // For now, we'll just ensure proper data types
+        const range = XLSX.utils.encode_range({
+            s: { c: 0, r: 1 },
+            e: { c: 19, r: rowCount }
+        });
+        worksheet['!ref'] = range;
+    },
+
+    // Format status for display
+    formatStatus: function(status) {
+        const statusMap = {
+            'todo': 'To Do',
+            'in-progress': 'In Progress',
+            'blocked': 'Blocked',
+            'paused': 'Paused',
+            'completed': 'Completed'
+        };
+        return statusMap[status] || status;
+    },
+
+    // Get task progress percentage
+    getTaskProgress: function(status) {
+        const progressMap = {
+            'todo': '0%',
+            'in-progress': '50%',
+            'paused': '25%',
+            'blocked': '0%',
+            'completed': '100%'
+        };
+        return progressMap[status] || '0%';
+    },
+
+    // Export filtered tasks (for custom exports)
+    exportFilteredTasks: function(tasks, filename = 'filtered_tasks.xlsx') {
+        try {
+            const workbook = XLSX.utils.book_new();
+            
+            const viewData = {
+                tasks: tasks,
+                period: 'Custom Filter',
+                type: 'filtered'
+            };
+            
+            this.addTaskDataSheet(workbook, viewData);
+            this.addSummarySheet(workbook, viewData);
+            
+            XLSX.writeFile(workbook, filename);
+            window.showNotification(`Filtered data exported as ${filename}`, 'success');
+            
+        } catch (error) {
+            console.error('Export error:', error);
+            window.showNotification('Error exporting filtered data', 'error');
+        }
+    }
+};
+
+// Auto-initialize when DOM is ready
+document.addEventListener('DOMContentLoaded', () => {
+    window.exportManager.init();
+});
+
+export default window.exportManager;
